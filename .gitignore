@@ -1,0 +1,7 @@
+# Local runtime data and generated build outputs
+/Prototype/Data/
+/Prototype/_build/
+/Prototype/Build.log
+/Prototype/*.exe
+/Prototype/*.pdb
+/Prototype/*.mdb

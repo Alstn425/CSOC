@@ -1,0 +1,1028 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><title>COAST 코드 인쇄본</title><style>body{font-family:Arial,"맑은 고딕",sans-serif;margin:24px;color:#111}pre{font-family:Consolas,"D2Coding",monospace;font-size:10pt;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere}h2{border-bottom:1px solid #555;padding-bottom:8px}button{padding:10px 18px}section{margin-top:40px}@media print{button{display:none}section{break-before:page}body{margin:0}pre{font-size:9pt;line-height:1.25}}@page{size:A4;margin:15mm}</style><h1>COAST 범용 수동 기록장: 코드 인쇄본</h1><p>2026-11-03 VBS 수정본: cmd.exe 없이 csc.exe를 직접 실행합니다. 기존 CS 파일은 그대로입니다.</p><p>다섯 파일을 각각 같은 폴더에 저장하세요. 제목과 설명은 코드에 입력하지 않습니다. CS는 UTF-8로 저장합니다.</p><p>실시간 영상 처리·대상 추적·감시 카메라 제어·클릭 매크로는 포함하지 않습니다. 상세 제한은 사용설명서를 확인하세요.</p><button onclick="window.print()">인쇄</button><section><h2>Program.cs</h2><pre>using System;
+using System.IO;
+using System.Windows.Forms;
+
+namespace CoastNotebook
+{
+    static class Program
+    {
+        [STAThread]
+        static void Main()
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string folder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, &quot;Data&quot;);
+            try
+            {
+                Directory.CreateDirectory(folder);
+                // The open handle prevents two processes from writing this data folder.
+                using (FileStream gate = new FileStream(Path.Combine(folder, &quot;app.lock&quot;),
+                    FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+                using (MainForm form = new MainForm(folder))
+                    Application.Run(form);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(&quot;시작하지 못했습니다. 이미 실행 중인지, 폴더 권한과 원본 파일을 확인하세요.\r\n&quot;
+                    + &quot;손상된 원본을 빈 데이터로 덮어쓰지 않았습니다.\r\n\r\n&quot; + ex.Message,
+                    &quot;기록장 시작 오류&quot;);
+            }
+        }
+    }
+}
+</pre></section><section><h2>Core.cs</h2><pre>using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Xml;
+using System.Xml.Serialization;
+
+namespace CoastNotebook
+{
+    public class Kind
+    {
+        public string Id = &quot;&quot;;
+        public string Name = &quot;&quot;;
+        public string Unit = &quot;&quot;;
+        public override string ToString() { return Name + &quot; (&quot; + Unit + &quot;)&quot;; }
+    }
+
+    public class Item
+    {
+        public string KindId = &quot;&quot;;
+        public string Name = &quot;&quot;;
+        public string Unit = &quot;&quot;;
+        public int Count;
+        public override string ToString() { return Name + &quot; &quot; + Count + Unit; }
+    }
+
+    public class Entry
+    {
+        public string Id = &quot;&quot;;
+        public DateTime Time;
+        public string Title = &quot;&quot;;
+        public string Note = &quot;&quot;;
+        public bool Complete;
+        public List&lt;Item&gt; Items = new List&lt;Item&gt;();
+        public List&lt;string&gt; Photos = new List&lt;string&gt;();
+        public override string ToString()
+        {
+            return Time.ToString(&quot;MM-dd HH:mm&quot;) + &quot; &quot; + Title + &quot; &quot;
+                + Describe() + (Complete ? &quot; [완료]&quot; : &quot; [진행]&quot;);
+        }
+        public string Describe()
+        {
+            List&lt;string&gt; parts = new List&lt;string&gt;();
+            foreach (Item item in Items) parts.Add(item.ToString());
+            return String.Join(&quot;, &quot;, parts.ToArray());
+        }
+    }
+
+    public class Settings
+    {
+        public bool Configured;
+        public string Name = &quot;기록장&quot;;
+        public string CsvFolder = &quot;&quot;;
+        public string PhotoFolder = &quot;&quot;;
+        public bool CopyText;
+        public bool ShowSuccess = true;
+        public List&lt;Kind&gt; Kinds = new List&lt;Kind&gt;();
+        public string Alarms = &quot;&quot;;
+    }
+
+    public class Book
+    {
+        public int Version = 1;
+        public Settings Settings = new Settings();
+        public List&lt;Entry&gt; Entries = new List&lt;Entry&gt;();
+        public List&lt;string&gt; PendingDays = new List&lt;string&gt;();
+        public string Help = &quot;&quot;;
+        public DateTime AcknowledgedDate;
+        public List&lt;string&gt; AlarmAcknowledgements = new List&lt;string&gt;();
+    }
+
+    public static class Data
+    {
+        static readonly XmlSerializer Serializer = new XmlSerializer(typeof(Book));
+
+        public static Book Clone(Book book)
+        {
+            using (MemoryStream memory = new MemoryStream())
+            {
+                WriteXml(memory, book);
+                memory.Position = 0;
+                return (Book)Serializer.Deserialize(memory);
+            }
+        }
+
+        public static Book Load(string path)
+        {
+            if (!File.Exists(path)) return new Book();
+            XmlReaderSettings options = new XmlReaderSettings();
+            options.DtdProcessing = DtdProcessing.Prohibit;
+            options.XmlResolver = null;
+            using (XmlReader reader = XmlReader.Create(path, options))
+            {
+                Book book = (Book)Serializer.Deserialize(reader);
+                Validate(book);
+                return book;
+            }
+        }
+
+        public static void Validate(Book book)
+        {
+            if (book == null || book.Version != 1 || book.Settings == null
+                || book.Entries == null || book.PendingDays == null
+                || book.AlarmAcknowledgements == null)
+                throw new InvalidDataException(&quot;지원하지 않거나 손상된 원본입니다.&quot;);
+            HashSet&lt;string&gt; ids = new HashSet&lt;string&gt;();
+            foreach (Entry entry in book.Entries)
+            {
+                Guid parsedId;
+                if (entry == null || !Guid.TryParseExact(entry.Id, &quot;N&quot;, out parsedId)
+                    || !ids.Add(entry.Id) || entry.Items == null || entry.Photos == null
+                    || entry.Title == null || entry.Note == null || entry.Time.Year &lt; 1753 || entry.Time.Year &gt; 9998)
+                    throw new InvalidDataException(&quot;기록 ID 또는 필드가 올바르지 않습니다.&quot;);
+                HashSet&lt;string&gt; kinds = new HashSet&lt;string&gt;();
+                foreach (Item item in entry.Items)
+                    if (item == null || String.IsNullOrWhiteSpace(item.KindId)
+                        || !kinds.Add(item.KindId) || item.Name == null || item.Unit == null
+                        || item.Count &lt; 0 || item.Count &gt; 999)
+                        throw new InvalidDataException(&quot;기록의 항목 또는 수량이 올바르지 않습니다.&quot;);
+            }
+            foreach (string day in book.PendingDays) ParseDay(day);
+        }
+
+        public static void AtomicWrite(string path, Action&lt;Stream&gt; write)
+        {
+            string temp = path + &quot;.&quot; + Guid.NewGuid().ToString(&quot;N&quot;) + &quot;.tmp&quot;;
+            try
+            {
+                using (FileStream stream = new FileStream(temp,
+                    FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    write(stream);
+                    stream.Flush(true);
+                }
+                if (File.Exists(path)) File.Replace(temp, path, null);
+                else File.Move(temp, path);
+            }
+            finally
+            {
+                try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+            }
+        }
+
+        public static void Save(string path, Book book)
+        {
+            Validate(book);
+            AtomicWrite(path, delegate(Stream stream) { WriteXml(stream, book); });
+        }
+
+        static void WriteXml(Stream stream, Book book)
+        {
+            XmlWriterSettings settings = new XmlWriterSettings();
+            settings.Encoding = new UTF8Encoding(false);
+            settings.Indent = true;
+            settings.NewLineHandling = NewLineHandling.Entitize;
+            settings.CloseOutput = false;
+            using (XmlWriter writer = XmlWriter.Create(stream, settings)) Serializer.Serialize(writer, book);
+        }
+
+        public static string Day(DateTime value) { return value.ToString(&quot;yyyy-MM-dd&quot;); }
+        public static DateTime ParseDay(string value)
+        {
+            return DateTime.ParseExact(value, &quot;yyyy-MM-dd&quot;, CultureInfo.InvariantCulture);
+        }
+        public static void Queue(Book book, DateTime day)
+        {
+            string text = Day(day);
+            if (!book.PendingDays.Contains(text)) book.PendingDays.Add(text);
+        }
+
+        public static string CsvCell(string value)
+        {
+            string text = value ?? &quot;&quot;;
+            string trimmed = text.TrimStart();
+            if ((trimmed.Length &gt; 0 &amp;&amp; &quot;=+-@&quot;.IndexOf(trimmed[0]) &gt;= 0)
+                || (text.Length &gt; 0 &amp;&amp; &quot;\t\r\n&quot;.IndexOf(text[0]) &gt;= 0))
+                text = &quot;&#x27;&quot; + text;
+            return &quot;\&quot;&quot; + text.Replace(&quot;\&quot;&quot;, &quot;\&quot;\&quot;&quot;) + &quot;\&quot;&quot;;
+        }
+
+        static void CsvLine(StringBuilder text, List&lt;string&gt; fields)
+        {
+            for (int i = 0; i &lt; fields.Count; i++)
+            {
+                if (i &gt; 0) text.Append(&#x27;,&#x27;);
+                text.Append(CsvCell(fields[i]));
+            }
+            text.Append(&quot;\r\n&quot;);
+        }
+
+        public static string ExportDay(Book book, DateTime day)
+        {
+            string folder = Path.Combine(book.Settings.CsvFolder, day.ToString(&quot;yyyy&quot;), Day(day));
+            Directory.CreateDirectory(folder);
+            string path = Path.Combine(folder, &quot;Records.csv&quot;);
+            // IDs identify columns even after a type is renamed or removed.
+            SortedDictionary&lt;string, string&gt; kinds = new SortedDictionary&lt;string, string&gt;();
+            foreach (Kind kind in book.Settings.Kinds) kinds[kind.Id] = kind.Name;
+            foreach (Entry entry in book.Entries)
+                foreach (Item item in entry.Items)
+                    if (!kinds.ContainsKey(item.KindId)) kinds[item.KindId] = item.Name;
+
+            List&lt;string&gt; header = new List&lt;string&gt;(new string[] {
+                &quot;ID&quot;, &quot;일시&quot;, &quot;제목&quot;, &quot;상태&quot;, &quot;내역&quot;, &quot;비고&quot;, &quot;사진수&quot; });
+            foreach (KeyValuePair&lt;string, string&gt; kind in kinds)
+                header.Add(kind.Value + &quot; [&quot; + kind.Key + &quot;] 수량&quot;);
+            StringBuilder text = new StringBuilder();
+            CsvLine(text, header);
+            foreach (Entry entry in book.Entries)
+            {
+                if (entry.Time.Date != day.Date) continue;
+                List&lt;string&gt; row = new List&lt;string&gt;(new string[] {
+                    entry.Id, entry.Time.ToString(&quot;yyyy-MM-dd HH:mm&quot;), entry.Title,
+                    entry.Complete ? &quot;완료&quot; : &quot;진행&quot;, entry.Describe(), entry.Note,
+                    entry.Photos.Count.ToString(CultureInfo.InvariantCulture) });
+                foreach (string kind in kinds.Keys)
+                {
+                    int count = 0;
+                    foreach (Item item in entry.Items)
+                        if (item.KindId == kind) count += item.Count;
+                    row.Add(count.ToString(CultureInfo.InvariantCulture));
+                }
+                CsvLine(text, row);
+            }
+            byte[] bytes = new UTF8Encoding(true).GetBytes(text.ToString());
+            AtomicWrite(path, delegate(Stream stream)
+            {
+                byte[] bom = new UTF8Encoding(true).GetPreamble();
+                stream.Write(bom, 0, bom.Length);
+                stream.Write(bytes, 0, bytes.Length);
+            });
+            return path;
+        }
+
+        public static string SafeName(string value)
+        {
+            StringBuilder result = new StringBuilder();
+            foreach (char c in value)
+                result.Append(c &lt; 32 || &quot;&lt;&gt;:\&quot;/\\|?*&quot;.IndexOf(c) &gt;= 0 ? &#x27;_&#x27; : c);
+            string name = result.ToString().Trim().TrimEnd(&#x27;.&#x27;, &#x27; &#x27;);
+            if (name.Length &gt; 80) name = name.Substring(0, 80).TrimEnd(&#x27;.&#x27;, &#x27; &#x27;);
+            return name.Length == 0 ? &quot;기록&quot; : name;
+        }
+
+        public static string PhotoStem(Entry entry)
+        {
+            return SafeName(entry.Time.ToString(&quot;yyyyMMdd_HHmm&quot;) + &quot; &quot;
+                + entry.Title + &quot; &quot; + entry.Describe()) + &quot;_&quot; + entry.Id.Substring(0, 8);
+        }
+
+        public static string UniquePath(string folder, string stem, string extension)
+        {
+            for (int i = 1; i &lt; 100000; i++)
+            {
+                string path = Path.Combine(folder, stem + &quot; (&quot; + i + &quot;)&quot; + extension);
+                if (!File.Exists(path) &amp;&amp; !Directory.Exists(path)) return path;
+            }
+            throw new IOException(&quot;사용 가능한 파일명을 만들 수 없습니다.&quot;);
+        }
+
+        public static string Hash(string path)
+        {
+            using (SHA256 sha = SHA256.Create())
+            using (FileStream stream = File.OpenRead(path))
+                return Convert.ToBase64String(sha.ComputeHash(stream));
+        }
+
+        public static void CopyVerified(string source, string destination)
+        {
+            bool created = false;
+            try
+            {
+                using (FileStream input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (FileStream output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    created = true;
+                    input.CopyTo(output);
+                    output.Flush(true);
+                }
+                if (Hash(source) != Hash(destination)) throw new IOException(&quot;사진 복사 검증에 실패했습니다.&quot;);
+            }
+            catch
+            {
+                if (created) { try { File.Delete(destination); } catch { } }
+                throw;
+            }
+        }
+    }
+}
+</pre></section><section><h2>Dialogs.cs</h2><pre>using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Windows.Forms;
+
+namespace CoastNotebook
+{
+    public class TextDialog : Form
+    {
+        public TextBox Input = new TextBox();
+        public TextDialog(string title, string text)
+        {
+            Text = title; Width = 560; Height = 470;
+            StartPosition = FormStartPosition.CenterParent;
+            Font = new Font(&quot;맑은 고딕&quot;, 9F);
+            Input.Multiline = true; Input.ScrollBars = ScrollBars.Both;
+            Input.Dock = DockStyle.Fill; Input.Text = text;
+            Button save = new Button();
+            save.Text = &quot;적용&quot;; save.Dock = DockStyle.Bottom; save.Height = 36;
+            save.DialogResult = DialogResult.OK;
+            Controls.Add(Input); Controls.Add(save);
+        }
+    }
+
+    public class ConfigDialog : Form
+    {
+        public Settings Value;
+        TextBox name, csv, photos, kinds, alarms;
+        CheckBox copy, success;
+        Settings previous;
+
+        public ConfigDialog(Settings current)
+        {
+            previous = current;
+            Text = &quot;기록장 설정&quot;; Width = 540; Height = 670;
+            StartPosition = FormStartPosition.CenterParent;
+            Font = new Font(&quot;맑은 고딕&quot;, 9F);
+            FlowLayoutPanel panel = new FlowLayoutPanel();
+            panel.Dock = DockStyle.Fill; panel.AutoScroll = true;
+            panel.FlowDirection = FlowDirection.TopDown; panel.WrapContents = false;
+            Controls.Add(panel);
+            name = Field(panel, &quot;기록장 이름&quot;, current.Name, 25);
+            csv = Field(panel, &quot;CSV 출력 폴더 (절대 경로)&quot;, current.CsvFolder, 25);
+            photos = Field(panel, &quot;사진 이동 폴더 (절대 경로)&quot;, current.PhotoFolder, 25);
+            List&lt;string&gt; lines = new List&lt;string&gt;();
+            foreach (Kind kind in current.Kinds) lines.Add(kind.Name + &quot;|&quot; + kind.Unit);
+            kinds = Field(panel, &quot;항목: 한 줄에 이름|단위 (최대 50개)&quot;, String.Join(&quot;\r\n&quot;, lines.ToArray()), 130);
+            alarms = Field(panel, &quot;일반 일정: 한 줄에 HH:mm|일정 이름 (빈칸이면 알림 없음)&quot;, current.Alarms, 100);
+            copy = new CheckBox(); copy.Text = &quot;저장 후 문장 복사&quot;;
+            copy.Checked = current.CopyText; copy.Width = 440; panel.Controls.Add(copy);
+            success = new CheckBox(); success.Text = &quot;저장 결과 팝업 표시&quot;;
+            success.Checked = current.ShowSuccess; success.Width = 440; panel.Controls.Add(success);
+            Label notice = new Label(); notice.Width = 470; notice.Height = 45;
+            notice.Text = &quot;유형 이름을 바꾸면 새 유형으로 등록됩니다. 과거 기록은 유지됩니다.\r\n외부로 복사한 파일은 설정 변경이나 기록 삭제로 자동 제거되지 않습니다.&quot;;
+            panel.Controls.Add(notice);
+            Button save = new Button(); save.Text = &quot;설정 저장&quot;; save.Size = new Size(470, 38);
+            save.Click += Save; panel.Controls.Add(save);
+        }
+
+        TextBox Field(Control panel, string label, string text, int height)
+        {
+            Label title = new Label(); title.Text = label; title.Width = 470; title.Height = 22;
+            panel.Controls.Add(title);
+            TextBox box = new TextBox(); box.Text = text; box.Width = 470;
+            box.Multiline = height &gt; 30; box.Height = height;
+            if (box.Multiline) box.ScrollBars = ScrollBars.Vertical;
+            panel.Controls.Add(box); return box;
+        }
+
+        public static List&lt;string[]&gt; ParseAlarms(string text)
+        {
+            List&lt;string[]&gt; result = new List&lt;string[]&gt;();
+            HashSet&lt;string&gt; unique = new HashSet&lt;string&gt;();
+            foreach (string raw in (text ?? &quot;&quot;).Split(&#x27;\n&#x27;))
+            {
+                string line = raw.Trim(); if (line.Length == 0) continue;
+                string[] parts = line.Split(new char[] { &#x27;|&#x27; }, 2);
+                DateTime parsed;
+                if (parts.Length != 2 || parts[1].Trim().Length == 0
+                    || !DateTime.TryParseExact(parts[0].Trim(), &quot;HH:mm&quot;, CultureInfo.InvariantCulture,
+                        DateTimeStyles.None, out parsed) || !unique.Add(line))
+                    throw new FormatException(&quot;일정 형식은 HH:mm|일정 이름 입니다. 같은 줄을 중복하지 마세요.&quot;);
+                result.Add(new string[] { parts[0].Trim(), parts[1].Trim() });
+            }
+            return result;
+        }
+
+        public static void Validate(Settings settings)
+        {
+            if (settings == null || !settings.Configured || String.IsNullOrWhiteSpace(settings.Name)
+                || String.IsNullOrWhiteSpace(settings.CsvFolder) || !Path.IsPathRooted(settings.CsvFolder)
+                || String.IsNullOrWhiteSpace(settings.PhotoFolder) || !Path.IsPathRooted(settings.PhotoFolder)
+                || settings.Kinds == null || settings.Kinds.Count == 0 || settings.Kinds.Count &gt; 50)
+                throw new FormatException(&quot;이름, 출력 폴더와 1~50개의 항목을 설정하세요.&quot;);
+            HashSet&lt;string&gt; ids = new HashSet&lt;string&gt;();
+            HashSet&lt;string&gt; names = new HashSet&lt;string&gt;(StringComparer.OrdinalIgnoreCase);
+            foreach (Kind kind in settings.Kinds)
+                if (kind == null || String.IsNullOrWhiteSpace(kind.Name) || String.IsNullOrWhiteSpace(kind.Id)
+                    || !ids.Add(kind.Id) || !names.Add(kind.Name) || String.IsNullOrWhiteSpace(kind.Unit))
+                    throw new FormatException(&quot;유형 이름, 단위와 ID를 확인하세요. 유형 이름은 중복할 수 없습니다.&quot;);
+            ParseAlarms(settings.Alarms);
+        }
+
+        void Save(object sender, EventArgs e)
+        {
+            try
+            {
+                Settings settings = new Settings(); settings.Configured = true;
+                settings.Name = name.Text.Trim(); settings.CsvFolder = csv.Text.Trim();
+                settings.PhotoFolder = photos.Text.Trim(); settings.CopyText = copy.Checked;
+                settings.ShowSuccess = success.Checked; settings.Alarms = alarms.Text;
+                foreach (string raw in kinds.Text.Split(&#x27;\n&#x27;))
+                {
+                    string line = raw.Trim(); if (line.Length == 0) continue;
+                    string[] parts = line.Split(&#x27;|&#x27;);
+                    if (parts.Length != 2 || parts[0].Trim().Length == 0 || parts[1].Trim().Length == 0)
+                        throw new FormatException(&quot;항목은 한 줄에 이름|단위로 입력하세요.&quot;);
+                    Kind kind = new Kind(); kind.Name = parts[0].Trim(); kind.Unit = parts[1].Trim();
+                    kind.Id = Guid.NewGuid().ToString(&quot;N&quot;);
+                    foreach (Kind old in previous.Kinds)
+                        if (old.Name == kind.Name &amp;&amp; old.Unit == kind.Unit) kind.Id = old.Id;
+                    settings.Kinds.Add(kind);
+                }
+                Validate(settings);
+                Value = settings; DialogResult = DialogResult.OK;
+            }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, &quot;설정 확인&quot;); }
+        }
+    }
+}
+</pre></section><section><h2>MainForm.cs</h2><pre>using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Windows.Forms;
+
+namespace CoastNotebook
+{
+    public class MainForm : Form
+    {
+        readonly string dataPath;
+        Book book;
+        string editing = &quot;&quot;;
+        bool dirty, loading, busy, closing;
+        DateTime promptedDate;
+        string exportError = &quot;&quot;;
+        FlowLayoutPanel editor;
+        DateTimePicker date, viewDate;
+        TextBox title, note, search;
+        ComboBox kind;
+        NumericUpDown quantity;
+        ListBox cart, records;
+        CheckBox complete, showActive, showDone, allDays;
+        Label status, photoStatus;
+        Timer clock;
+
+        public MainForm(string folder)
+        {
+            dataPath = Path.Combine(folder, &quot;Records.xml&quot;);
+            book = Data.Load(dataPath);
+            if (book.Settings.Kinds == null) book.Settings.Kinds = new List&lt;Kind&gt;();
+            if (!book.Settings.Configured)
+            {
+                book.Settings.CsvFolder = Path.Combine(folder, &quot;CSV&quot;);
+                book.Settings.PhotoFolder = Path.Combine(folder, &quot;Photos&quot;);
+                book.Settings.Kinds.Add(new Kind { Id = Guid.NewGuid().ToString(&quot;N&quot;), Name = &quot;항목A&quot;, Unit = &quot;개&quot; });
+            }
+            Text = &quot;COAST 수동 기록장 - 범용 프로토타입&quot;;
+            Font = new Font(&quot;맑은 고딕&quot;, 9F);
+            BackColor = Color.FromArgb(28, 34, 39); ForeColor = Color.WhiteSmoke;
+            Rectangle area = Screen.PrimaryScreen.WorkingArea;
+            Bounds = new Rectangle(area.Right - 420, area.Top, 420, area.Height);
+            MinimumSize = new Size(360, Math.Min(600, area.Height));
+            FlowLayoutPanel page = new FlowLayoutPanel();
+            page.Dock = DockStyle.Fill; page.FlowDirection = FlowDirection.TopDown;
+            page.WrapContents = false; page.AutoScroll = true; Controls.Add(page);
+            FlowLayoutPanel tools = Row(page, 78);
+            Button(tools, &quot;설정&quot;, Configure); Button(tools, &quot;CSV 재시도&quot;, RetryCsv);
+            Button(tools, &quot;열람용 CSV&quot;, OpenCsv); Button(tools, &quot;도움말&quot;, EditHelp);
+            Button(tools, &quot;날짜 확인&quot;, delegate { EnsureDay(true); });
+            editor = new FlowLayoutPanel(); editor.FlowDirection = FlowDirection.TopDown;
+            editor.WrapContents = false; editor.Width = 358; editor.AutoSize = true;
+            editor.AutoSizeMode = AutoSizeMode.GrowAndShrink; page.Controls.Add(editor);
+            Label(editor, &quot;기록 일시 / 제목 (일반 문서·업무 기록)&quot;);
+            date = new DateTimePicker(); date.Format = DateTimePickerFormat.Custom;
+            date.CustomFormat = &quot;yyyy-MM-dd HH:mm&quot;; date.Width = 340; editor.Controls.Add(date);
+            title = TextBox(editor, false, 25); title.MaxLength = 120;
+            Label(editor, &quot;항목 / 수량 (같은 항목은 합산, 0~999)&quot;);
+            FlowLayoutPanel itemRow = Row(editor, 40);
+            kind = new ComboBox(); kind.Width = 165; kind.DropDownStyle = ComboBoxStyle.DropDownList;
+            itemRow.Controls.Add(kind);
+            quantity = new NumericUpDown(); quantity.Width = 65;
+            quantity.Minimum = 0; quantity.Maximum = 999; quantity.Value = 1; itemRow.Controls.Add(quantity);
+            Button(itemRow, &quot;+ 추가&quot;, AddItem, 85);
+            cart = new ListBox(); cart.Width = 340; cart.Height = 66; editor.Controls.Add(cart);
+            FlowLayoutPanel cartButtons = Row(editor, 40);
+            Button(cartButtons, &quot;항목 삭제&quot;, delegate {
+                if (cart.SelectedIndex &gt;= 0) { cart.Items.RemoveAt(cart.SelectedIndex); dirty = true; }
+            });
+            complete = Check(cartButtons, &quot;완료&quot;, false);
+            Label(editor, &quot;비고 (여러 줄 입력 가능)&quot;); note = TextBox(editor, true, 54);
+            FlowLayoutPanel editButtons = Row(editor, 78);
+            Button(editButtons, &quot;새 기록&quot;, NewEntry); Button(editButtons, &quot;저장 / 수정&quot;, SaveEntry);
+            Button(editButtons, &quot;영구 삭제&quot;, DeleteEntry); Button(editButtons, &quot;사진 이동&quot;, AttachPhotos);
+            Button(editButtons, &quot;사진명 갱신&quot;, RenamePhotos);
+            photoStatus = Label(editor, &quot;사진 없음&quot;);
+            status = Label(page, &quot;준비 중&quot;); status.Height = 54;
+            FlowLayoutPanel filters = Row(page, 30);
+            showActive = Check(filters, &quot;진행&quot;, true); showDone = Check(filters, &quot;완료&quot;, false);
+            allDays = Check(filters, &quot;모든 날짜&quot;, false);
+            viewDate = new DateTimePicker(); viewDate.Format = DateTimePickerFormat.Short;
+            viewDate.Width = 340; page.Controls.Add(viewDate);
+            Label(page, &quot;검색: 제목 / 항목 / 비고&quot;);
+            search = TextBox(page, false, 25);
+            records = new ListBox(); records.Width = 340; records.Height = Math.Max(150, area.Height - 710);
+            records.HorizontalScrollbar = true; page.Controls.Add(records);
+            records.SelectedIndexChanged += SelectEntry;
+            showActive.CheckedChanged += FilterChanged; showDone.CheckedChanged += FilterChanged;
+            allDays.CheckedChanged += FilterChanged; viewDate.ValueChanged += FilterChanged;
+            search.TextChanged += FilterChanged;
+            title.TextChanged += MarkDirty; note.TextChanged += MarkDirty;
+            date.ValueChanged += MarkDirty; complete.CheckedChanged += MarkDirty;
+            FormClosing += ConfirmClosing;
+            Shown += Started;
+            clock = new Timer(); clock.Interval = 15000; clock.Tick += Tick;
+            FormClosed += delegate { clock.Dispose(); };
+            ResetEditor();
+        }
+
+        FlowLayoutPanel Row(Control parent, int height)
+        {
+            FlowLayoutPanel row = new FlowLayoutPanel(); row.Width = 350; row.Height = height;
+            parent.Controls.Add(row); return row;
+        }
+        Label Label(Control parent, string text)
+        {
+            Label label = new Label(); label.Text = text; label.Width = 340; label.Height = 23;
+            parent.Controls.Add(label); return label;
+        }
+        TextBox TextBox(Control parent, bool multiline, int height)
+        {
+            TextBox box = new TextBox(); box.Width = 340; box.Multiline = multiline; box.Height = height;
+            box.BackColor = Color.FromArgb(43, 51, 58); box.ForeColor = Color.WhiteSmoke;
+            if (multiline) box.ScrollBars = ScrollBars.Vertical;
+            parent.Controls.Add(box); return box;
+        }
+        void Button(Control parent, string text, EventHandler handler) { Button(parent, text, handler, 108); }
+        void Button(Control parent, string text, EventHandler handler, int width)
+        {
+            Button button = new Button(); button.Text = text; button.Width = width; button.Height = 30;
+            button.BackColor = Color.FromArgb(31, 84, 85); button.ForeColor = Color.White;
+            button.FlatStyle = FlatStyle.Flat; button.Click += handler; parent.Controls.Add(button);
+        }
+        CheckBox Check(Control parent, string text, bool check)
+        {
+            CheckBox box = new CheckBox(); box.Text = text; box.Checked = check; box.Width = 105;
+            parent.Controls.Add(box); return box;
+        }
+        void MarkDirty(object sender, EventArgs e) { if (!loading) dirty = true; }
+        void Error(Exception ex) { MessageBox.Show(this, ex.Message, &quot;작업 결과 확인&quot;); }
+        bool Discard()
+        {
+            return !dirty || MessageBox.Show(this, &quot;저장하지 않은 입력을 버립니까?&quot;, &quot;입력 확인&quot;,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+        }
+
+        void Started(object sender, EventArgs e)
+        {
+            try
+            {
+                try { ConfigDialog.Validate(book.Settings); }
+                catch { if (!ConfigureCore()) { closing = true; Close(); return; } }
+                LoadKinds(); RefreshRecords(); EnsureDay(true); SyncCsv(); clock.Start();
+            }
+            catch (Exception ex) { Error(ex); closing = true; Close(); }
+        }
+        void LoadKinds()
+        {
+            kind.Items.Clear();
+            foreach (Kind value in book.Settings.Kinds) kind.Items.Add(value);
+            if (kind.Items.Count &gt; 0) kind.SelectedIndex = 0;
+        }
+        void Persist(Book next)
+        {
+            Data.Save(dataPath, next); book = next;
+        }
+        void Configure(object sender, EventArgs e)
+        {
+            if (busy) return;
+            try { if (ConfigureCore()) { LoadKinds(); SyncCsv(); } }
+            catch (Exception ex) { Error(ex); }
+        }
+        bool ConfigureCore()
+        {
+            using (ConfigDialog dialog = new ConfigDialog(book.Settings))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return false;
+                Book next = Data.Clone(book); next.Settings = dialog.Value;
+                foreach (Entry entry in next.Entries) Data.Queue(next, entry.Time);
+                Persist(next); return true;
+            }
+        }
+
+        void AddItem(object sender, EventArgs e)
+        {
+            Kind selected = kind.SelectedItem as Kind; if (selected == null) return;
+            int count = (int)quantity.Value;
+            foreach (Item item in cart.Items)
+                if (item.KindId == selected.Id)
+                {
+                    if (item.Count + count &gt; 999) { MessageBox.Show(this, &quot;합산 수량은 999 이하여야 합니다.&quot;); return; }
+                    item.Count += count;
+                    int index = cart.Items.IndexOf(item); cart.Items[index] = item;
+                    dirty = true; return;
+                }
+            cart.Items.Add(new Item { KindId = selected.Id, Name = selected.Name, Unit = selected.Unit, Count = count });
+            dirty = true;
+        }
+        void NewEntry(object sender, EventArgs e) { if (Discard()) ResetEditor(); }
+        void ResetEditor()
+        {
+            loading = true; editing = &quot;&quot;; date.Value = DateTime.Now; title.Text = &quot;&quot;; note.Text = &quot;&quot;;
+            complete.Checked = false; cart.Items.Clear(); records.ClearSelected();
+            photoStatus.Text = &quot;사진 없음&quot;; loading = false; dirty = false;
+        }
+        Entry Find(Book source, string id) { return source.Entries.Find(delegate(Entry entry) { return entry.Id == id; }); }
+        void SelectEntry(object sender, EventArgs e)
+        {
+            if (loading) return;
+            Entry selected = records.SelectedItem as Entry; if (selected == null) return;
+            if (!Discard())
+            {
+                loading = true; records.SelectedItem = Find(book, editing); loading = false; return;
+            }
+            loading = true; editing = selected.Id; date.Value = selected.Time; title.Text = selected.Title;
+            note.Text = selected.Note; complete.Checked = selected.Complete; cart.Items.Clear();
+            foreach (Item item in selected.Items)
+                cart.Items.Add(new Item { KindId = item.KindId, Name = item.Name, Unit = item.Unit, Count = item.Count });
+            UpdatePhotoStatus(selected); loading = false; dirty = false;
+        }
+        void UpdatePhotoStatus(Entry entry)
+        {
+            int missing = 0, mismatch = 0;
+            foreach (string path in entry.Photos)
+            {
+                if (!File.Exists(path)) missing++;
+                else if (!Path.GetFileName(path).StartsWith(Data.PhotoStem(entry) + &quot; (&quot;, StringComparison.Ordinal)) mismatch++;
+            }
+            photoStatus.Text = &quot;연결 사진 &quot; + entry.Photos.Count + &quot; / 없음 &quot; + missing + &quot; / 이름 갱신 필요 &quot; + mismatch;
+        }
+
+        void SaveEntry(object sender, EventArgs e)
+        {
+            if (!EnsureDay(true)) return;
+            if (date.Value &gt; DateTime.Now) { MessageBox.Show(this, &quot;미래 시각은 입력할 수 없습니다.&quot;); return; }
+            if (String.IsNullOrWhiteSpace(title.Text) || cart.Items.Count == 0)
+            { MessageBox.Show(this, &quot;제목과 하나 이상의 항목을 입력하세요.&quot;); return; }
+            Entry value = new Entry(); value.Id = editing.Length == 0 ? Guid.NewGuid().ToString(&quot;N&quot;) : editing;
+            value.Time = date.Value; value.Title = title.Text.Trim(); value.Note = note.Text; value.Complete = complete.Checked;
+            foreach (Item item in cart.Items) value.Items.Add(new Item {
+                KindId = item.KindId, Name = item.Name, Unit = item.Unit, Count = item.Count });
+            try
+            {
+                Book next = Data.Clone(book); Entry old = Find(next, value.Id);
+                if (old != null)
+                {
+                    value.Photos = new List&lt;string&gt;(old.Photos); Data.Queue(next, old.Time); next.Entries.Remove(old);
+                }
+                next.Entries.Add(value); Data.Queue(next, value.Time); Persist(next);
+            }
+            catch (Exception ex) { status.Text = &quot;원본 저장 실패 / 입력 유지&quot;; Error(ex); return; }
+            editing = value.Id; dirty = false; SyncCsv();
+            string extra = &quot;&quot;;
+            if (value.Photos.Count &gt; 0 &amp;&amp; MessageBox.Show(this,
+                &quot;기록은 저장되었습니다. 연결 사진의 이름도 지금 갱신합니까?&quot;, &quot;사진명 확인&quot;,
+                MessageBoxButtons.YesNo) == DialogResult.Yes) extra = RenameCore(value.Id);
+            bool copied = false;
+            if (book.Settings.CopyText)
+            {
+                try { Clipboard.SetText(value.Time.ToString(&quot;yyyy-MM-dd HH:mm&quot;) + &quot; &quot; + value.Title + &quot; &quot; + value.Describe()); copied = true; }
+                catch (Exception ex) { extra += &quot;\r\n클립보드 복사 실패: &quot; + ex.Message; }
+            }
+            RefreshRecords();
+            Entry saved = Find(book, editing); if (saved != null) UpdatePhotoStatus(saved);
+            string message = &quot;원본 저장 완료&quot; + (exportError.Length == 0 ? &quot; / CSV 갱신 완료&quot; : &quot; / CSV 갱신 대기&quot;)
+                + (copied ? &quot; / 문장 복사 완료&quot; : &quot;&quot;) + extra;
+            status.Text = message;
+            if (book.Settings.ShowSuccess || extra.Length &gt; 0 || exportError.Length &gt; 0)
+                MessageBox.Show(this, message + (exportError.Length == 0 ? &quot;&quot; : &quot;\r\n&quot; + exportError), &quot;저장 결과&quot;);
+        }
+
+        void DeleteEntry(object sender, EventArgs e)
+        {
+            Entry selected = Find(book, editing); if (selected == null) { MessageBox.Show(this, &quot;기록을 먼저 선택하세요.&quot;); return; }
+            if (MessageBox.Show(this, &quot;기록을 영구 삭제합니까? 복원할 수 없습니다.\r\n연결된 사진 파일은 남깁니다.&quot;, &quot;삭제 확인&quot;,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            try
+            {
+                Book next = Data.Clone(book); Entry old = Find(next, editing); Data.Queue(next, old.Time);
+                next.Entries.Remove(old); Persist(next); ResetEditor(); RefreshRecords(); SyncCsv();
+            }
+            catch (Exception ex) { Error(ex); }
+        }
+        void FilterChanged(object sender, EventArgs e) { if (records != null) RefreshRecords(); }
+        void RefreshRecords()
+        {
+            loading = true; records.Items.Clear();
+            List&lt;Entry&gt; ordered = new List&lt;Entry&gt;(book.Entries);
+            ordered.Sort(delegate(Entry a, Entry b) { return b.Time.CompareTo(a.Time); });
+            foreach (Entry entry in ordered)
+            {
+                if ((entry.Complete &amp;&amp; !showDone.Checked) || (!entry.Complete &amp;&amp; !showActive.Checked)) continue;
+                if (!allDays.Checked &amp;&amp; entry.Time.Date != viewDate.Value.Date) continue;
+                if ((entry.Title + &quot; &quot; + entry.Note + &quot; &quot; + entry.Describe()).IndexOf(search.Text, StringComparison.OrdinalIgnoreCase) &lt; 0) continue;
+                records.Items.Add(entry); if (entry.Id == editing) records.SelectedItem = entry;
+            }
+            loading = false;
+        }
+
+        void SyncCsv()
+        {
+            try
+            {
+                foreach (string day in book.PendingDays) Data.ExportDay(book, Data.ParseDay(day));
+                if (book.PendingDays.Count &gt; 0)
+                {
+                    Book next = Data.Clone(book); next.PendingDays.Clear(); Persist(next);
+                }
+                exportError = &quot;&quot;; status.Text = &quot;원본 정상 / CSV 갱신 대기 없음&quot;;
+            }
+            catch (Exception ex) { exportError = ex.Message; status.Text = &quot;원본 보존 / CSV 갱신 대기 (재시도 가능)&quot;; }
+        }
+        void RetryCsv(object sender, EventArgs e)
+        {
+            SyncCsv(); MessageBox.Show(this, exportError.Length == 0 ? &quot;대기 중인 CSV 갱신을 완료했습니다.&quot; : exportError);
+        }
+        void OpenCsv(object sender, EventArgs e)
+        {
+            try
+            {
+                DateTime day = viewDate.Value.Date; Entry entry = Find(book, editing);
+                if (entry != null) day = entry.Time.Date;
+                string original = Data.ExportDay(book, day);
+                string copies = Path.Combine(Path.GetDirectoryName(dataPath), &quot;ViewCopies&quot;); Directory.CreateDirectory(copies);
+                string copy = Path.Combine(copies, Data.Day(day) + &quot;_열람용_&quot; + Guid.NewGuid().ToString(&quot;N&quot;) + &quot;.csv&quot;);
+                File.Copy(original, copy, false);
+                try { Process.Start(new ProcessStartInfo(copy) { UseShellExecute = true }); }
+                catch (Exception ex) { MessageBox.Show(this, &quot;사본은 저장했지만 열지 못했습니다.\r\n&quot; + copy + &quot;\r\n&quot; + ex.Message); }
+            }
+            catch (Exception ex) { Error(ex); }
+        }
+
+        void AttachPhotos(object sender, EventArgs e)
+        {
+            Entry entry = Find(book, editing);
+            if (entry == null || dirty) { MessageBox.Show(this, &quot;사진을 연결할 기록을 먼저 저장하세요.&quot;); return; }
+            using (OpenFileDialog dialog = new OpenFileDialog())
+            {
+                dialog.Multiselect = true; dialog.Filter = &quot;사진|*.jpg;*.jpeg;*.png;*.bmp&quot;;
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                busy = true; int moved = 0, copied = 0, failed = 0; List&lt;string&gt; errors = new List&lt;string&gt;();
+                try
+                {
+                    string folder = Path.Combine(book.Settings.PhotoFolder, Data.Day(entry.Time)); Directory.CreateDirectory(folder);
+                    foreach (string source in dialog.FileNames)
+                    {
+                        string destination = &quot;&quot;; bool linked = false, owned = false;
+                        try
+                        {
+                            foreach (Entry other in book.Entries)
+                                foreach (string path in other.Photos)
+                                    if (String.Equals(Path.GetFullPath(path), Path.GetFullPath(source), StringComparison.OrdinalIgnoreCase))
+                                        throw new IOException(&quot;이미 연결된 사진입니다.&quot;);
+                            destination = Data.UniquePath(folder, Data.PhotoStem(entry), Path.GetExtension(source).ToLowerInvariant());
+                            Data.CopyVerified(source, destination); owned = true;
+                            Book next = Data.Clone(book); Find(next, entry.Id).Photos.Add(destination);
+                            Data.Queue(next, entry.Time); Persist(next); linked = true;
+                            // Recheck immediately before removing the source. On failure, keep both files.
+                            if (Data.Hash(source) != Data.Hash(destination)) throw new IOException(&quot;원본이 변경되어 삭제하지 않았습니다.&quot;);
+                            File.Delete(source); moved++;
+                        }
+                        catch (Exception ex)
+                        {
+                            if (linked) copied++; else failed++;
+                            if (!linked &amp;&amp; owned) { try { if (File.Exists(destination)) File.Delete(destination); } catch { } }
+                            errors.Add(Path.GetFileName(source) + &quot;: &quot; + ex.Message);
+                        }
+                    }
+                }
+                catch (Exception ex) { failed = dialog.FileNames.Length - moved - copied; errors.Add(ex.Message); }
+                finally { busy = false; }
+                UpdatePhotoStatus(Find(book, entry.Id)); SyncCsv();
+                MessageBox.Show(this, &quot;이동 &quot; + moved + &quot; / 연결·복사만 완료 &quot; + copied + &quot; / 실패 &quot; + failed
+                    + &quot;\r\n&quot; + String.Join(&quot;\r\n&quot;, errors.ToArray()), &quot;사진 처리 결과&quot;);
+            }
+        }
+        void RenamePhotos(object sender, EventArgs e)
+        {
+            if (dirty) { MessageBox.Show(this, &quot;기록을 먼저 저장하세요.&quot;); return; }
+            if (Find(book, editing) == null) return;
+            MessageBox.Show(this, RenameCore(editing), &quot;사진명 갱신 결과&quot;);
+            UpdatePhotoStatus(Find(book, editing));
+        }
+        string RenameCore(string id)
+        {
+            busy = true; int renamed = 0, missing = 0; List&lt;string&gt; errors = new List&lt;string&gt;();
+            try
+            {
+                Entry entry = Find(book, id);
+                for (int i = 0; i &lt; entry.Photos.Count; i++)
+                {
+                    string source = Find(book, id).Photos[i];
+                    if (!File.Exists(source)) { missing++; continue; }
+                    if (Path.GetFileName(source).StartsWith(Data.PhotoStem(entry) + &quot; (&quot;, StringComparison.Ordinal)) continue;
+                    string destination = Data.UniquePath(Path.GetDirectoryName(source), Data.PhotoStem(entry), Path.GetExtension(source));
+                    bool moved = false;
+                    try
+                    {
+                        File.Move(source, destination); moved = true;
+                        Book next = Data.Clone(book); Find(next, id).Photos[i] = destination; Persist(next); renamed++;
+                    }
+                    catch (Exception ex)
+                    {
+                        string rollback = &quot;&quot;;
+                        if (moved) { try { File.Move(destination, source); } catch (Exception failure) { rollback = &quot; / 되돌리기 실패: &quot; + destination + &quot; / &quot; + failure.Message; } }
+                        errors.Add(Path.GetFileName(source) + &quot;: &quot; + ex.Message + rollback);
+                    }
+                }
+            }
+            catch (Exception ex) { errors.Add(ex.Message); }
+            finally { busy = false; }
+            return &quot;\r\n이름 변경 &quot; + renamed + &quot; / 파일 없음 &quot; + missing + &quot; / 오류 &quot; + errors.Count
+                + (errors.Count == 0 ? &quot;&quot; : &quot;\r\n&quot; + String.Join(&quot;\r\n&quot;, errors.ToArray()));
+        }
+
+        void EditHelp(object sender, EventArgs e)
+        {
+            using (TextDialog dialog = new TextDialog(&quot;일반 도움말 편집&quot;, book.Help))
+            {
+                while (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    try { Book next = Data.Clone(book); next.Help = dialog.Input.Text; Persist(next); break; }
+                    catch (Exception ex) { Error(ex); }
+                }
+            }
+        }
+        bool EnsureDay(bool force)
+        {
+            DateTime today = DateTime.Now.Date;
+            if (book.AcknowledgedDate == today) { editor.Enabled = true; return true; }
+            if (!force &amp;&amp; promptedDate == today) return false;
+            promptedDate = today; editor.Enabled = false; busy = true;
+            try
+            {
+                MessageBox.Show(this, &quot;날짜가 &quot; + Data.Day(today) + &quot;입니다.\r\n&quot;
+                    + &quot;기존 기록은 복제하지 않고 보존합니다. 입력 중인 내용과 일시는 그대로 유지됩니다.\r\n&quot;
+                    + &quot;과거 기록은 날짜 필터 또는 [모든 날짜]에서 조회하세요.&quot;, &quot;날짜 확인&quot;);
+                Book next = Data.Clone(book); next.AcknowledgedDate = today;
+                next.AlarmAcknowledgements.RemoveAll(delegate(string key) { return !key.StartsWith(Data.Day(today) + &quot;|&quot;, StringComparison.Ordinal); });
+                Persist(next); editor.Enabled = true; return true;
+            }
+            catch (Exception ex) { status.Text = &quot;날짜 확인 저장 실패 / 입력 잠김 / 날짜 확인 버튼으로 재시도&quot;; Error(ex); return false; }
+            finally { busy = false; }
+        }
+        void Tick(object sender, EventArgs e)
+        {
+            if (busy || ContainsModal()) return;
+            if (!EnsureDay(false)) return;
+            try
+            {
+                DateTime now = DateTime.Now; List&lt;string&gt; due = new List&lt;string&gt;(); List&lt;string&gt; keys = new List&lt;string&gt;();
+                foreach (string[] alarm in ConfigDialog.ParseAlarms(book.Settings.Alarms))
+                {
+                    string key = Data.Day(now) + &quot;|&quot; + alarm[0] + &quot;|&quot; + alarm[1];
+                    DateTime at = now.Date.Add(TimeSpan.ParseExact(alarm[0], @&quot;hh\:mm&quot;, CultureInfo.InvariantCulture));
+                    if (now &gt;= at &amp;&amp; !book.AlarmAcknowledgements.Contains(key))
+                    { due.Add(alarm[0] + &quot; &quot; + alarm[1]); keys.Add(key); }
+                }
+                if (due.Count == 0) return;
+                busy = true;
+                MessageBox.Show(this, &quot;확인하지 않은 금일 일반 일정입니다.\r\n&quot; + String.Join(&quot;\r\n&quot;, due.ToArray()), &quot;일정 알림&quot;);
+                Book next = Data.Clone(book); next.AlarmAcknowledgements.AddRange(keys); Persist(next);
+            }
+            catch (Exception ex) { Error(ex); }
+            finally { busy = false; }
+        }
+        bool ContainsModal() { foreach (Form form in Application.OpenForms) if (form != this &amp;&amp; form.Modal) return true; return false; }
+        void ConfirmClosing(object sender, FormClosingEventArgs e)
+        {
+            if (busy) { e.Cancel = true; return; }
+            if (!closing &amp;&amp; !Discard()) e.Cancel = true;
+        }
+    }
+}
+</pre></section><section><h2>Build.vbs</h2><pre>Option Explicit
+
+Dim fs, sh, folder, compiler, windows, sources, source
+Dim command, code, stage, output, log, problem, number
+Dim process, textOut, textErr, logFile
+Set fs = CreateObject(&quot;Scripting.FileSystemObject&quot;)
+Set sh = CreateObject(&quot;WScript.Shell&quot;)
+folder = fs.GetParentFolderName(WScript.ScriptFullName)
+sh.CurrentDirectory = folder
+windows = sh.ExpandEnvironmentStrings(&quot;%WINDIR%&quot;)
+compiler = fs.BuildPath(windows, &quot;Microsoft.NET\Framework\v4.0.30319\csc.exe&quot;)
+If Not fs.FileExists(compiler) Then
+    compiler = fs.BuildPath(windows, &quot;Microsoft.NET\Framework64\v4.0.30319\csc.exe&quot;)
+End If
+If Not fs.FileExists(compiler) Then
+    MsgBox &quot;C# compiler not found.&quot;, vbCritical, &quot;Build&quot;
+    WScript.Quit 1
+End If
+
+sources = Array(&quot;Program.cs&quot;, &quot;Core.cs&quot;, &quot;Dialogs.cs&quot;, &quot;MainForm.cs&quot;)
+For Each source In sources
+    If Not fs.FileExists(fs.BuildPath(folder, source)) Then
+        MsgBox &quot;Missing source: &quot; &amp; source, vbCritical, &quot;Build&quot;
+        WScript.Quit 1
+    End If
+Next
+
+On Error Resume Next
+If Not fs.FolderExists(fs.BuildPath(folder, &quot;_build&quot;)) Then
+    fs.CreateFolder fs.BuildPath(folder, &quot;_build&quot;)
+End If
+number = Err.Number
+problem = Err.Description
+On Error GoTo 0
+If number &lt;&gt; 0 Then
+    MsgBox &quot;Build folder error &quot; &amp; number &amp; &quot;: &quot; &amp; problem, vbCritical, &quot;Build&quot;
+    WScript.Quit 1
+End If
+stage = &quot;_build\CoastNotebook.build.exe&quot;
+output = &quot;CoastNotebook.exe&quot;
+log = &quot;Build.log&quot;
+
+command = Q(compiler) &amp; &quot; /nologo /target:winexe /langversion:5&quot;
+command = command &amp; &quot; /platform:anycpu /codepage:65001 /warnaserror+&quot;
+command = command &amp; &quot; /reference:System.Windows.Forms.dll&quot;
+command = command &amp; &quot; /reference:System.Drawing.dll&quot;
+command = command &amp; &quot; /reference:System.Xml.dll&quot;
+command = command &amp; &quot; /reference:System.Core.dll&quot;
+command = command &amp; &quot; /out:&quot; &amp; Q(stage)
+For Each source In sources
+    command = command &amp; &quot; &quot; &amp; Q(source)
+Next
+
+On Error Resume Next
+Set process = sh.Exec(command)
+number = Err.Number
+problem = Err.Description
+On Error GoTo 0
+If number &lt;&gt; 0 Then
+    MsgBox &quot;Compiler start error &quot; &amp; number &amp; &quot;: &quot; &amp; problem, vbCritical, &quot;Build&quot;
+    WScript.Quit 1
+End If
+
+textOut = process.StdOut.ReadAll()
+textErr = process.StdErr.ReadAll()
+Do While process.Status = 0
+    WScript.Sleep 100
+Loop
+code = process.ExitCode
+
+On Error Resume Next
+Set logFile = fs.CreateTextFile(fs.BuildPath(folder, log), True, True)
+logFile.WriteLine &quot;Compiler exit code: &quot; &amp; code
+logFile.WriteLine textOut
+logFile.WriteLine textErr
+logFile.Close
+number = Err.Number
+problem = Err.Description
+On Error GoTo 0
+If number &lt;&gt; 0 Then
+    MsgBox &quot;Build log error &quot; &amp; number &amp; &quot;: &quot; &amp; problem, vbCritical, &quot;Build&quot;
+    WScript.Quit 1
+End If
+
+If code &lt;&gt; 0 Or Not fs.FileExists(fs.BuildPath(folder, stage)) Then
+    MsgBox &quot;Build failed. Open Build.log. The previous EXE was not replaced.&quot;, vbCritical, &quot;Build&quot;
+    WScript.Quit 1
+End If
+
+On Error Resume Next
+fs.CopyFile fs.BuildPath(folder, stage), fs.BuildPath(folder, output), True
+number = Err.Number
+problem = Err.Description
+If number &lt;&gt; 0 Then
+    On Error GoTo 0
+    MsgBox &quot;EXE replacement error &quot; &amp; number &amp; &quot;: &quot; &amp; problem _
+        &amp; vbCrLf &amp; &quot;Close the running program and retry.&quot;, vbCritical, &quot;Build&quot;
+    WScript.Quit 1
+End If
+On Error GoTo 0
+
+MsgBox &quot;Build completed: CoastNotebook.exe&quot;, vbInformation, &quot;Build&quot;
+
+Function Q(value)
+    Q = Chr(34) &amp; value &amp; Chr(34)
+End Function
+</pre></section></html>
