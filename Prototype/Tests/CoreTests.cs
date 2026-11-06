@@ -54,6 +54,15 @@ class CoreTests
         Check(File.Exists(source) && Data.Hash(source) == Data.Hash(copy), "Verified photo copy keeps source until commit");
         Fails(delegate { Data.CopyVerified(source, copy); }, "Photo collision rejected");
         Check(File.ReadAllText(copy) == "photo bytes", "Existing photo not overwritten or removed");
+        string single = Data.PhotoFileName(entry, 1, 1, ".jpg");
+        Check(single == Data.PhotoStem(entry) + ".jpg", "One photo has no numbered suffix");
+        Check(Data.PhotoFileName(entry, 2, 1, ".jpg") == Data.PhotoStem(entry) + " (1).jpg"
+            && Data.PhotoFileName(entry, 2, 2, ".jpg") == Data.PhotoStem(entry) + " (2).jpg", "Multiple photos have ordered suffixes");
+        string collision = Path.Combine(folder, single); File.WriteAllText(collision, "keep existing");
+        Fails(delegate { Data.PhotoDestination(entry, 1, 1, folder, ".jpg", null); }, "Singleton naming collision rejected");
+        Check(File.ReadAllText(collision) == "keep existing", "Singleton collision preserves existing file");
+        Check(Data.PhotoDestination(entry, 1, 1, folder, ".jpg", collision) == collision, "Already named photo needs no change");
+        Fails(delegate { Data.PhotoFileName(entry, 1, 2, ".jpg"); }, "Invalid photo ordinal rejected");
         edited.Entries[0].Photos.Add(copy); Data.Save(path, edited);
         edited.Entries.Clear(); Data.Save(path, edited); Data.ExportDay(edited, entry.Time.AddDays(1));
         Check(Data.Load(path).Entries.Count == 0 && File.Exists(copy), "Permanent record deletion retains photo");

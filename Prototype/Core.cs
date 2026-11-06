@@ -51,7 +51,7 @@ namespace CoastNotebook
     public class Settings
     {
         public bool Configured;
-        public string Name = "기록장";
+        public string Name = "";
         public string CsvFolder = "";
         public string PhotoFolder = "";
         public bool CopyText;
@@ -250,14 +250,21 @@ namespace CoastNotebook
                 + entry.Title + " " + entry.Describe()) + "_" + entry.Id.Substring(0, 8);
         }
 
-        public static string UniquePath(string folder, string stem, string extension)
+        public static string PhotoFileName(Entry entry, int count, int ordinal, string extension)
         {
-            for (int i = 1; i < 100000; i++)
-            {
-                string path = Path.Combine(folder, stem + " (" + i + ")" + extension);
-                if (!File.Exists(path) && !Directory.Exists(path)) return path;
-            }
-            throw new IOException("사용 가능한 파일명을 만들 수 없습니다.");
+            if (count < 1 || ordinal < 1 || ordinal > count) throw new ArgumentOutOfRangeException("ordinal");
+            return PhotoStem(entry) + (count > 1 ? " (" + ordinal.ToString(CultureInfo.InvariantCulture) + ")" : "") + extension;
+        }
+
+        public static string PhotoDestination(Entry entry, int count, int ordinal, string folder,
+            string extension, string currentPath)
+        {
+            string path = Path.Combine(folder, PhotoFileName(entry, count, ordinal, extension));
+            if (currentPath != null && String.Equals(Path.GetFullPath(path), Path.GetFullPath(currentPath),
+                StringComparison.OrdinalIgnoreCase)) return path;
+            if (File.Exists(path) || Directory.Exists(path))
+                throw new IOException("같은 이름의 파일 또는 폴더가 있습니다: " + path);
+            return path;
         }
 
         public static string Hash(string path)

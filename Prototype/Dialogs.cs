@@ -41,9 +41,9 @@ namespace CoastNotebook
             panel.Dock = DockStyle.Fill; panel.AutoScroll = true;
             panel.FlowDirection = FlowDirection.TopDown; panel.WrapContents = false;
             Controls.Add(panel);
-            name = Field(panel, "기록장 이름", current.Name, 25);
-            csv = Field(panel, "CSV 출력 폴더 (절대 경로)", current.CsvFolder, 25);
-            photos = Field(panel, "사진 이동 폴더 (절대 경로)", current.PhotoFolder, 25);
+            name = Field(panel, "구간 명 (예시: 4구간)", current.Name, 25);
+            csv = FolderField(panel, "CSV 출력 폴더", current.CsvFolder);
+            photos = FolderField(panel, "사진 할당 폴더", current.PhotoFolder);
             List<string> lines = new List<string>();
             foreach (Kind kind in current.Kinds) lines.Add(kind.Name + "|" + kind.Unit);
             kinds = Field(panel, "항목: 한 줄에 이름|단위 (최대 50개)", String.Join("\r\n", lines.ToArray()), 130);
@@ -67,6 +67,27 @@ namespace CoastNotebook
             box.Multiline = height > 30; box.Height = height;
             if (box.Multiline) box.ScrollBars = ScrollBars.Vertical;
             panel.Controls.Add(box); return box;
+        }
+
+        TextBox FolderField(Control panel, string label, string text)
+        {
+            Label title = new Label(); title.Text = label; title.Width = 470; title.Height = 22;
+            panel.Controls.Add(title);
+            FlowLayoutPanel row = new FlowLayoutPanel(); row.Width = 470; row.Height = 36;
+            row.WrapContents = false; panel.Controls.Add(row);
+            TextBox box = new TextBox(); box.Width = 365; box.Text = text; row.Controls.Add(box);
+            Button browse = new Button(); browse.Text = "찾아보기"; browse.Width = 90; browse.Height = 27;
+            browse.Click += delegate
+            {
+                using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+                {
+                    dialog.Description = label + "를 선택하세요.";
+                    dialog.ShowNewFolderButton = true;
+                    if (Directory.Exists(box.Text.Trim())) dialog.SelectedPath = box.Text.Trim();
+                    if (dialog.ShowDialog(this) == DialogResult.OK) box.Text = dialog.SelectedPath;
+                }
+            };
+            row.Controls.Add(browse); return box;
         }
 
         public static List<string[]> ParseAlarms(string text)

@@ -1,9 +1,8 @@
-﻿COAST 범용 수동 기록장 프로토타입 - VBS 수정본
+﻿COAST 범용 기록장 전체 소스 - 2026-11-06 설정·사진 수정본
 
-다섯 파일을 각각 같은 폴더에 저장합니다. 구분 제목은 코드에 입력하지 마세요.
-CS는 UTF-8로 저장합니다. 2026-11-03 VBS는 csc.exe를 Exec로 직접 실행합니다.
-기존 CS 파일은 변경하지 않았습니다. 빌드 실패 시 Build.log를 메모장으로 직접 여세요.
-
+이번 수정은 요구사항 1·2·8번만 반영합니다. 전체 요구사항 구현본이 아닙니다.
+구분 제목은 코드에 입력하지 마세요. CS는 UTF-8로 저장합니다.
+자세한 적용법과 미반영 사항은 변경사항_2026-11-06.md를 참고하세요.
 
 ============================================================
 파일명: Program.cs
@@ -40,7 +39,6 @@ namespace CoastNotebook
         }
     }
 }
-
 
 ============================================================
 파일명: Core.cs
@@ -98,7 +96,7 @@ namespace CoastNotebook
     public class Settings
     {
         public bool Configured;
-        public string Name = "기록장";
+        public string Name = "";
         public string CsvFolder = "";
         public string PhotoFolder = "";
         public bool CopyText;
@@ -297,14 +295,21 @@ namespace CoastNotebook
                 + entry.Title + " " + entry.Describe()) + "_" + entry.Id.Substring(0, 8);
         }
 
-        public static string UniquePath(string folder, string stem, string extension)
+        public static string PhotoFileName(Entry entry, int count, int ordinal, string extension)
         {
-            for (int i = 1; i < 100000; i++)
-            {
-                string path = Path.Combine(folder, stem + " (" + i + ")" + extension);
-                if (!File.Exists(path) && !Directory.Exists(path)) return path;
-            }
-            throw new IOException("사용 가능한 파일명을 만들 수 없습니다.");
+            if (count < 1 || ordinal < 1 || ordinal > count) throw new ArgumentOutOfRangeException("ordinal");
+            return PhotoStem(entry) + (count > 1 ? " (" + ordinal.ToString(CultureInfo.InvariantCulture) + ")" : "") + extension;
+        }
+
+        public static string PhotoDestination(Entry entry, int count, int ordinal, string folder,
+            string extension, string currentPath)
+        {
+            string path = Path.Combine(folder, PhotoFileName(entry, count, ordinal, extension));
+            if (currentPath != null && String.Equals(Path.GetFullPath(path), Path.GetFullPath(currentPath),
+                StringComparison.OrdinalIgnoreCase)) return path;
+            if (File.Exists(path) || Directory.Exists(path))
+                throw new IOException("같은 이름의 파일 또는 폴더가 있습니다: " + path);
+            return path;
         }
 
         public static string Hash(string path)
@@ -336,7 +341,6 @@ namespace CoastNotebook
         }
     }
 }
-
 
 ============================================================
 파일명: Dialogs.cs
@@ -384,9 +388,9 @@ namespace CoastNotebook
             panel.Dock = DockStyle.Fill; panel.AutoScroll = true;
             panel.FlowDirection = FlowDirection.TopDown; panel.WrapContents = false;
             Controls.Add(panel);
-            name = Field(panel, "기록장 이름", current.Name, 25);
-            csv = Field(panel, "CSV 출력 폴더 (절대 경로)", current.CsvFolder, 25);
-            photos = Field(panel, "사진 이동 폴더 (절대 경로)", current.PhotoFolder, 25);
+            name = Field(panel, "구간 명 (예시: 4구간)", current.Name, 25);
+            csv = FolderField(panel, "CSV 출력 폴더", current.CsvFolder);
+            photos = FolderField(panel, "사진 할당 폴더", current.PhotoFolder);
             List<string> lines = new List<string>();
             foreach (Kind kind in current.Kinds) lines.Add(kind.Name + "|" + kind.Unit);
             kinds = Field(panel, "항목: 한 줄에 이름|단위 (최대 50개)", String.Join("\r\n", lines.ToArray()), 130);
@@ -410,6 +414,27 @@ namespace CoastNotebook
             box.Multiline = height > 30; box.Height = height;
             if (box.Multiline) box.ScrollBars = ScrollBars.Vertical;
             panel.Controls.Add(box); return box;
+        }
+
+        TextBox FolderField(Control panel, string label, string text)
+        {
+            Label title = new Label(); title.Text = label; title.Width = 470; title.Height = 22;
+            panel.Controls.Add(title);
+            FlowLayoutPanel row = new FlowLayoutPanel(); row.Width = 470; row.Height = 36;
+            row.WrapContents = false; panel.Controls.Add(row);
+            TextBox box = new TextBox(); box.Width = 365; box.Text = text; row.Controls.Add(box);
+            Button browse = new Button(); browse.Text = "찾아보기"; browse.Width = 90; browse.Height = 27;
+            browse.Click += delegate
+            {
+                using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+                {
+                    dialog.Description = label + "를 선택하세요.";
+                    dialog.ShowNewFolderButton = true;
+                    if (Directory.Exists(box.Text.Trim())) dialog.SelectedPath = box.Text.Trim();
+                    if (dialog.ShowDialog(this) == DialogResult.OK) box.Text = dialog.SelectedPath;
+                }
+            };
+            row.Controls.Add(browse); return box;
         }
 
         public static List<string[]> ParseAlarms(string text)
@@ -473,7 +498,6 @@ namespace CoastNotebook
         }
     }
 }
-
 
 ============================================================
 파일명: MainForm.cs
@@ -553,7 +577,7 @@ namespace CoastNotebook
             Label(editor, "비고 (여러 줄 입력 가능)"); note = TextBox(editor, true, 54);
             FlowLayoutPanel editButtons = Row(editor, 78);
             Button(editButtons, "새 기록", NewEntry); Button(editButtons, "저장 / 수정", SaveEntry);
-            Button(editButtons, "영구 삭제", DeleteEntry); Button(editButtons, "사진 이동", AttachPhotos);
+            Button(editButtons, "영구 삭제", DeleteEntry); Button(editButtons, "사진할당", AttachPhotos);
             Button(editButtons, "사진명 갱신", RenamePhotos);
             photoStatus = Label(editor, "사진 없음");
             status = Label(page, "준비 중"); status.Height = 54;
@@ -693,10 +717,12 @@ namespace CoastNotebook
         void UpdatePhotoStatus(Entry entry)
         {
             int missing = 0, mismatch = 0;
-            foreach (string path in entry.Photos)
+            for (int i = 0; i < entry.Photos.Count; i++)
             {
+                string path = entry.Photos[i];
                 if (!File.Exists(path)) missing++;
-                else if (!Path.GetFileName(path).StartsWith(Data.PhotoStem(entry) + " (", StringComparison.Ordinal)) mismatch++;
+                else if (!String.Equals(Path.GetFileName(path), Data.PhotoFileName(entry, entry.Photos.Count,
+                    i + 1, Path.GetExtension(path)), StringComparison.OrdinalIgnoreCase)) mismatch++;
             }
             photoStatus.Text = "연결 사진 " + entry.Photos.Count + " / 없음 " + missing + " / 이름 갱신 필요 " + mismatch;
         }
@@ -823,7 +849,10 @@ namespace CoastNotebook
                                 foreach (string path in other.Photos)
                                     if (String.Equals(Path.GetFullPath(path), Path.GetFullPath(source), StringComparison.OrdinalIgnoreCase))
                                         throw new IOException("이미 연결된 사진입니다.");
-                            destination = Data.UniquePath(folder, Data.PhotoStem(entry), Path.GetExtension(source).ToLowerInvariant());
+                            int total = entry.Photos.Count + dialog.FileNames.Length;
+                            int ordinal = Find(book, entry.Id).Photos.Count + 1;
+                            destination = Data.PhotoDestination(entry, total, ordinal, folder,
+                                Path.GetExtension(source).ToLowerInvariant(), null);
                             Data.CopyVerified(source, destination); owned = true;
                             Book next = Data.Clone(book); Find(next, entry.Id).Photos.Add(destination);
                             Data.Queue(next, entry.Time); Persist(next); linked = true;
@@ -841,9 +870,10 @@ namespace CoastNotebook
                 }
                 catch (Exception ex) { failed = dialog.FileNames.Length - moved - copied; errors.Add(ex.Message); }
                 finally { busy = false; }
+                string renamed = RenameCore(entry.Id);
                 UpdatePhotoStatus(Find(book, entry.Id)); SyncCsv();
                 MessageBox.Show(this, "이동 " + moved + " / 연결·복사만 완료 " + copied + " / 실패 " + failed
-                    + "\r\n" + String.Join("\r\n", errors.ToArray()), "사진 처리 결과");
+                    + "\r\n" + String.Join("\r\n", errors.ToArray()) + renamed, "사진 처리 결과");
             }
         }
         void RenamePhotos(object sender, EventArgs e)
@@ -863,11 +893,14 @@ namespace CoastNotebook
                 {
                     string source = Find(book, id).Photos[i];
                     if (!File.Exists(source)) { missing++; continue; }
-                    if (Path.GetFileName(source).StartsWith(Data.PhotoStem(entry) + " (", StringComparison.Ordinal)) continue;
-                    string destination = Data.UniquePath(Path.GetDirectoryName(source), Data.PhotoStem(entry), Path.GetExtension(source));
+                    string expected = Data.PhotoFileName(entry, entry.Photos.Count, i + 1, Path.GetExtension(source));
+                    if (String.Equals(Path.GetFileName(source), expected, StringComparison.OrdinalIgnoreCase)) continue;
+                    string destination = "";
                     bool moved = false;
                     try
                     {
+                        destination = Data.PhotoDestination(entry, entry.Photos.Count, i + 1,
+                            Path.GetDirectoryName(source), Path.GetExtension(source), source);
                         File.Move(source, destination); moved = true;
                         Book next = Data.Clone(book); Find(next, id).Photos[i] = destination; Persist(next); renamed++;
                     }
@@ -944,7 +977,6 @@ namespace CoastNotebook
         }
     }
 }
-
 
 ============================================================
 파일명: Build.vbs

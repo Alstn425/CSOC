@@ -1,4 +1,4 @@
-<!doctype html><html lang="ko"><meta charset="utf-8"><title>COAST 코드 인쇄본</title><style>body{font-family:Arial,"맑은 고딕",sans-serif;margin:24px;color:#111}pre{font-family:Consolas,"D2Coding",monospace;font-size:10pt;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere}h2{border-bottom:1px solid #555;padding-bottom:8px}button{padding:10px 18px}section{margin-top:40px}@media print{button{display:none}section{break-before:page}body{margin:0}pre{font-size:9pt;line-height:1.25}}@page{size:A4;margin:15mm}</style><h1>COAST 범용 수동 기록장: 코드 인쇄본</h1><p>2026-11-03 VBS 수정본: cmd.exe 없이 csc.exe를 직접 실행합니다. 기존 CS 파일은 그대로입니다.</p><p>다섯 파일을 각각 같은 폴더에 저장하세요. 제목과 설명은 코드에 입력하지 않습니다. CS는 UTF-8로 저장합니다.</p><p>실시간 영상 처리·대상 추적·감시 카메라 제어·클릭 매크로는 포함하지 않습니다. 상세 제한은 사용설명서를 확인하세요.</p><button onclick="window.print()">인쇄</button><section><h2>Program.cs</h2><pre>using System;
+<!doctype html><html lang="ko"><meta charset="utf-8"><title>COAST 범용 기록장 전체 소스 - 2026-11-06 설정·사진 수정본</title><style>body{font-family:Arial,"맑은 고딕",sans-serif;margin:24px}pre{font-family:Consolas,"D2Coding",monospace;font-size:10pt;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere}h2{border-bottom:1px solid #555}section{margin-top:40px}@media print{button{display:none}section{break-before:page}body{margin:0}pre{font-size:9pt;line-height:1.25}}@page{size:A4;margin:15mm}</style><h1>COAST 범용 기록장 전체 소스 - 2026-11-06 설정·사진 수정본</h1><p>COAST 범용 기록장 전체 소스 - 2026-11-06 설정·사진 수정본<br><br>이번 수정은 요구사항 1·2·8번만 반영합니다. 전체 요구사항 구현본이 아닙니다.<br>구분 제목은 코드에 입력하지 마세요. CS는 UTF-8로 저장합니다.<br>자세한 적용법과 미반영 사항은 변경사항_2026-11-06.md를 참고하세요.<br></p><button onclick="window.print()">인쇄</button><section><h2>Program.cs</h2><pre>using System;
 using System.IO;
 using System.Windows.Forms;
 
@@ -83,7 +83,7 @@ namespace CoastNotebook
     public class Settings
     {
         public bool Configured;
-        public string Name = &quot;기록장&quot;;
+        public string Name = &quot;&quot;;
         public string CsvFolder = &quot;&quot;;
         public string PhotoFolder = &quot;&quot;;
         public bool CopyText;
@@ -282,14 +282,21 @@ namespace CoastNotebook
                 + entry.Title + &quot; &quot; + entry.Describe()) + &quot;_&quot; + entry.Id.Substring(0, 8);
         }
 
-        public static string UniquePath(string folder, string stem, string extension)
+        public static string PhotoFileName(Entry entry, int count, int ordinal, string extension)
         {
-            for (int i = 1; i &lt; 100000; i++)
-            {
-                string path = Path.Combine(folder, stem + &quot; (&quot; + i + &quot;)&quot; + extension);
-                if (!File.Exists(path) &amp;&amp; !Directory.Exists(path)) return path;
-            }
-            throw new IOException(&quot;사용 가능한 파일명을 만들 수 없습니다.&quot;);
+            if (count &lt; 1 || ordinal &lt; 1 || ordinal &gt; count) throw new ArgumentOutOfRangeException(&quot;ordinal&quot;);
+            return PhotoStem(entry) + (count &gt; 1 ? &quot; (&quot; + ordinal.ToString(CultureInfo.InvariantCulture) + &quot;)&quot; : &quot;&quot;) + extension;
+        }
+
+        public static string PhotoDestination(Entry entry, int count, int ordinal, string folder,
+            string extension, string currentPath)
+        {
+            string path = Path.Combine(folder, PhotoFileName(entry, count, ordinal, extension));
+            if (currentPath != null &amp;&amp; String.Equals(Path.GetFullPath(path), Path.GetFullPath(currentPath),
+                StringComparison.OrdinalIgnoreCase)) return path;
+            if (File.Exists(path) || Directory.Exists(path))
+                throw new IOException(&quot;같은 이름의 파일 또는 폴더가 있습니다: &quot; + path);
+            return path;
         }
 
         public static string Hash(string path)
@@ -364,9 +371,9 @@ namespace CoastNotebook
             panel.Dock = DockStyle.Fill; panel.AutoScroll = true;
             panel.FlowDirection = FlowDirection.TopDown; panel.WrapContents = false;
             Controls.Add(panel);
-            name = Field(panel, &quot;기록장 이름&quot;, current.Name, 25);
-            csv = Field(panel, &quot;CSV 출력 폴더 (절대 경로)&quot;, current.CsvFolder, 25);
-            photos = Field(panel, &quot;사진 이동 폴더 (절대 경로)&quot;, current.PhotoFolder, 25);
+            name = Field(panel, &quot;구간 명 (예시: 4구간)&quot;, current.Name, 25);
+            csv = FolderField(panel, &quot;CSV 출력 폴더&quot;, current.CsvFolder);
+            photos = FolderField(panel, &quot;사진 할당 폴더&quot;, current.PhotoFolder);
             List&lt;string&gt; lines = new List&lt;string&gt;();
             foreach (Kind kind in current.Kinds) lines.Add(kind.Name + &quot;|&quot; + kind.Unit);
             kinds = Field(panel, &quot;항목: 한 줄에 이름|단위 (최대 50개)&quot;, String.Join(&quot;\r\n&quot;, lines.ToArray()), 130);
@@ -390,6 +397,27 @@ namespace CoastNotebook
             box.Multiline = height &gt; 30; box.Height = height;
             if (box.Multiline) box.ScrollBars = ScrollBars.Vertical;
             panel.Controls.Add(box); return box;
+        }
+
+        TextBox FolderField(Control panel, string label, string text)
+        {
+            Label title = new Label(); title.Text = label; title.Width = 470; title.Height = 22;
+            panel.Controls.Add(title);
+            FlowLayoutPanel row = new FlowLayoutPanel(); row.Width = 470; row.Height = 36;
+            row.WrapContents = false; panel.Controls.Add(row);
+            TextBox box = new TextBox(); box.Width = 365; box.Text = text; row.Controls.Add(box);
+            Button browse = new Button(); browse.Text = &quot;찾아보기&quot;; browse.Width = 90; browse.Height = 27;
+            browse.Click += delegate
+            {
+                using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+                {
+                    dialog.Description = label + &quot;를 선택하세요.&quot;;
+                    dialog.ShowNewFolderButton = true;
+                    if (Directory.Exists(box.Text.Trim())) dialog.SelectedPath = box.Text.Trim();
+                    if (dialog.ShowDialog(this) == DialogResult.OK) box.Text = dialog.SelectedPath;
+                }
+            };
+            row.Controls.Add(browse); return box;
         }
 
         public static List&lt;string[]&gt; ParseAlarms(string text)
@@ -528,7 +556,7 @@ namespace CoastNotebook
             Label(editor, &quot;비고 (여러 줄 입력 가능)&quot;); note = TextBox(editor, true, 54);
             FlowLayoutPanel editButtons = Row(editor, 78);
             Button(editButtons, &quot;새 기록&quot;, NewEntry); Button(editButtons, &quot;저장 / 수정&quot;, SaveEntry);
-            Button(editButtons, &quot;영구 삭제&quot;, DeleteEntry); Button(editButtons, &quot;사진 이동&quot;, AttachPhotos);
+            Button(editButtons, &quot;영구 삭제&quot;, DeleteEntry); Button(editButtons, &quot;사진할당&quot;, AttachPhotos);
             Button(editButtons, &quot;사진명 갱신&quot;, RenamePhotos);
             photoStatus = Label(editor, &quot;사진 없음&quot;);
             status = Label(page, &quot;준비 중&quot;); status.Height = 54;
@@ -668,10 +696,12 @@ namespace CoastNotebook
         void UpdatePhotoStatus(Entry entry)
         {
             int missing = 0, mismatch = 0;
-            foreach (string path in entry.Photos)
+            for (int i = 0; i &lt; entry.Photos.Count; i++)
             {
+                string path = entry.Photos[i];
                 if (!File.Exists(path)) missing++;
-                else if (!Path.GetFileName(path).StartsWith(Data.PhotoStem(entry) + &quot; (&quot;, StringComparison.Ordinal)) mismatch++;
+                else if (!String.Equals(Path.GetFileName(path), Data.PhotoFileName(entry, entry.Photos.Count,
+                    i + 1, Path.GetExtension(path)), StringComparison.OrdinalIgnoreCase)) mismatch++;
             }
             photoStatus.Text = &quot;연결 사진 &quot; + entry.Photos.Count + &quot; / 없음 &quot; + missing + &quot; / 이름 갱신 필요 &quot; + mismatch;
         }
@@ -798,7 +828,10 @@ namespace CoastNotebook
                                 foreach (string path in other.Photos)
                                     if (String.Equals(Path.GetFullPath(path), Path.GetFullPath(source), StringComparison.OrdinalIgnoreCase))
                                         throw new IOException(&quot;이미 연결된 사진입니다.&quot;);
-                            destination = Data.UniquePath(folder, Data.PhotoStem(entry), Path.GetExtension(source).ToLowerInvariant());
+                            int total = entry.Photos.Count + dialog.FileNames.Length;
+                            int ordinal = Find(book, entry.Id).Photos.Count + 1;
+                            destination = Data.PhotoDestination(entry, total, ordinal, folder,
+                                Path.GetExtension(source).ToLowerInvariant(), null);
                             Data.CopyVerified(source, destination); owned = true;
                             Book next = Data.Clone(book); Find(next, entry.Id).Photos.Add(destination);
                             Data.Queue(next, entry.Time); Persist(next); linked = true;
@@ -816,9 +849,10 @@ namespace CoastNotebook
                 }
                 catch (Exception ex) { failed = dialog.FileNames.Length - moved - copied; errors.Add(ex.Message); }
                 finally { busy = false; }
+                string renamed = RenameCore(entry.Id);
                 UpdatePhotoStatus(Find(book, entry.Id)); SyncCsv();
                 MessageBox.Show(this, &quot;이동 &quot; + moved + &quot; / 연결·복사만 완료 &quot; + copied + &quot; / 실패 &quot; + failed
-                    + &quot;\r\n&quot; + String.Join(&quot;\r\n&quot;, errors.ToArray()), &quot;사진 처리 결과&quot;);
+                    + &quot;\r\n&quot; + String.Join(&quot;\r\n&quot;, errors.ToArray()) + renamed, &quot;사진 처리 결과&quot;);
             }
         }
         void RenamePhotos(object sender, EventArgs e)
@@ -838,11 +872,14 @@ namespace CoastNotebook
                 {
                     string source = Find(book, id).Photos[i];
                     if (!File.Exists(source)) { missing++; continue; }
-                    if (Path.GetFileName(source).StartsWith(Data.PhotoStem(entry) + &quot; (&quot;, StringComparison.Ordinal)) continue;
-                    string destination = Data.UniquePath(Path.GetDirectoryName(source), Data.PhotoStem(entry), Path.GetExtension(source));
+                    string expected = Data.PhotoFileName(entry, entry.Photos.Count, i + 1, Path.GetExtension(source));
+                    if (String.Equals(Path.GetFileName(source), expected, StringComparison.OrdinalIgnoreCase)) continue;
+                    string destination = &quot;&quot;;
                     bool moved = false;
                     try
                     {
+                        destination = Data.PhotoDestination(entry, entry.Photos.Count, i + 1,
+                            Path.GetDirectoryName(source), Path.GetExtension(source), source);
                         File.Move(source, destination); moved = true;
                         Book next = Data.Clone(book); Find(next, id).Photos[i] = destination; Persist(next); renamed++;
                     }

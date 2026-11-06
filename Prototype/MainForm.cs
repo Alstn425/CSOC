@@ -73,7 +73,7 @@ namespace CoastNotebook
             Label(editor, "비고 (여러 줄 입력 가능)"); note = TextBox(editor, true, 54);
             FlowLayoutPanel editButtons = Row(editor, 78);
             Button(editButtons, "새 기록", NewEntry); Button(editButtons, "저장 / 수정", SaveEntry);
-            Button(editButtons, "영구 삭제", DeleteEntry); Button(editButtons, "사진 이동", AttachPhotos);
+            Button(editButtons, "영구 삭제", DeleteEntry); Button(editButtons, "사진할당", AttachPhotos);
             Button(editButtons, "사진명 갱신", RenamePhotos);
             photoStatus = Label(editor, "사진 없음");
             status = Label(page, "준비 중"); status.Height = 54;
@@ -213,10 +213,12 @@ namespace CoastNotebook
         void UpdatePhotoStatus(Entry entry)
         {
             int missing = 0, mismatch = 0;
-            foreach (string path in entry.Photos)
+            for (int i = 0; i < entry.Photos.Count; i++)
             {
+                string path = entry.Photos[i];
                 if (!File.Exists(path)) missing++;
-                else if (!Path.GetFileName(path).StartsWith(Data.PhotoStem(entry) + " (", StringComparison.Ordinal)) mismatch++;
+                else if (!String.Equals(Path.GetFileName(path), Data.PhotoFileName(entry, entry.Photos.Count,
+                    i + 1, Path.GetExtension(path)), StringComparison.OrdinalIgnoreCase)) mismatch++;
             }
             photoStatus.Text = "연결 사진 " + entry.Photos.Count + " / 없음 " + missing + " / 이름 갱신 필요 " + mismatch;
         }
@@ -343,7 +345,10 @@ namespace CoastNotebook
                                 foreach (string path in other.Photos)
                                     if (String.Equals(Path.GetFullPath(path), Path.GetFullPath(source), StringComparison.OrdinalIgnoreCase))
                                         throw new IOException("이미 연결된 사진입니다.");
-                            destination = Data.UniquePath(folder, Data.PhotoStem(entry), Path.GetExtension(source).ToLowerInvariant());
+                            int total = entry.Photos.Count + dialog.FileNames.Length;
+                            int ordinal = Find(book, entry.Id).Photos.Count + 1;
+                            destination = Data.PhotoDestination(entry, total, ordinal, folder,
+                                Path.GetExtension(source).ToLowerInvariant(), null);
                             Data.CopyVerified(source, destination); owned = true;
                             Book next = Data.Clone(book); Find(next, entry.Id).Photos.Add(destination);
                             Data.Queue(next, entry.Time); Persist(next); linked = true;
@@ -361,9 +366,10 @@ namespace CoastNotebook
                 }
                 catch (Exception ex) { failed = dialog.FileNames.Length - moved - copied; errors.Add(ex.Message); }
                 finally { busy = false; }
+                string renamed = RenameCore(entry.Id);
                 UpdatePhotoStatus(Find(book, entry.Id)); SyncCsv();
                 MessageBox.Show(this, "이동 " + moved + " / 연결·복사만 완료 " + copied + " / 실패 " + failed
-                    + "\r\n" + String.Join("\r\n", errors.ToArray()), "사진 처리 결과");
+                    + "\r\n" + String.Join("\r\n", errors.ToArray()) + renamed, "사진 처리 결과");
             }
         }
         void RenamePhotos(object sender, EventArgs e)
@@ -383,11 +389,14 @@ namespace CoastNotebook
                 {
                     string source = Find(book, id).Photos[i];
                     if (!File.Exists(source)) { missing++; continue; }
-                    if (Path.GetFileName(source).StartsWith(Data.PhotoStem(entry) + " (", StringComparison.Ordinal)) continue;
-                    string destination = Data.UniquePath(Path.GetDirectoryName(source), Data.PhotoStem(entry), Path.GetExtension(source));
+                    string expected = Data.PhotoFileName(entry, entry.Photos.Count, i + 1, Path.GetExtension(source));
+                    if (String.Equals(Path.GetFileName(source), expected, StringComparison.OrdinalIgnoreCase)) continue;
+                    string destination = "";
                     bool moved = false;
                     try
                     {
+                        destination = Data.PhotoDestination(entry, entry.Photos.Count, i + 1,
+                            Path.GetDirectoryName(source), Path.GetExtension(source), source);
                         File.Move(source, destination); moved = true;
                         Book next = Data.Clone(book); Find(next, id).Photos[i] = destination; Persist(next); renamed++;
                     }
